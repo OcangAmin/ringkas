@@ -352,5 +352,59 @@ class TestCli(unittest.TestCase):
             self.assertIn("Last summarized", out.getvalue())
 
 
+class TestWeekly(unittest.TestCase):
+    def setUp(self):
+        self.home = TempHome()
+        self.h = self.home.__enter__()
+        self.daily = ringkas.data_dir() / "daily"
+        self.daily.mkdir(parents=True)
+        for d in ["2026-10-20", "2026-10-26", "2026-10-28", "2026-11-01", "2026-11-02"]:
+            (self.daily / f"{d}.md").write_text(f"# {d}\n## Done\n- work {d}\n")
+        ringkas.state_dir().mkdir(parents=True)
+        (ringkas.state_dir() / "missing").write_text("2026-10-27\ttranscripts deleted before summarizing\n"
+                                                      "2026-11-03\tno transcripts\n")
+        self.cfg = wita_cfg()
+
+    def tearDown(self):
+        self.home.__exit__(None, None, None)
+
+    def remaining(self):
+        return sorted(p.name for p in self.daily.iterdir())
+
+    def test_rollup_day(self):
+        self.assertEqual(ringkas.rollup_day(date(2026, 11, 6), "monday"), date(2026, 11, 2))
+        self.assertEqual(ringkas.rollup_day(date(2026, 11, 2), "monday"), date(2026, 11, 2))
+
+    def test_success(self):
+        fake = FakeSummarizer("```\n# Week\n## Main work\n- x\n```")
+        out = ringkas.run_weekly(date(2026, 11, 6), self.cfg, summarizer=fake)
+        self.assertEqual(out, ringkas.data_dir() / "weekly" / "2026-11-02.md")
+        text = out.read_text()
+        self.assertTrue(text.startswith("# Week 2026-10-20 – 2026-11-01\n## Main work"), text)
+        self.assertIn("## Not recorded\n- 2026-10-27: transcripts deleted before summarizing", text)
+        self.assertNotIn("2026-11-03", text)
+        self.assertEqual(self.remaining(), ["2026-11-02.md"])
+        self.assertIn("work 2026-11-01", fake.prompts[0])
+        self.assertNotIn("work 2026-11-02", fake.prompts[0])
+        self.assertIn("<daily-notes>", fake.prompts[0])
+        self.assertEqual((ringkas.state_dir() / "missing").read_text(), "2026-11-03\tno transcripts\n")
+        again = FakeSummarizer(ringkas.SummarizerError("must not be called"))
+        self.assertEqual(ringkas.run_weekly(date(2026, 11, 6), self.cfg, summarizer=again), out)
+        self.assertEqual(again.prompts, [])
+
+    def test_bad_answer_or_error_keeps_dailies(self):
+        for answer in ["sorry, cannot", ringkas.SummarizerError("down")]:
+            self.assertIsNone(ringkas.run_weekly(date(2026, 11, 6), self.cfg, summarizer=FakeSummarizer(answer)))
+            self.assertEqual(len(self.remaining()), 5)
+            self.assertFalse((ringkas.data_dir() / "weekly" / "2026-11-02.md").exists())
+
+    def test_nothing_to_roll(self):
+        for p in list(self.daily.iterdir()):
+            p.unlink()
+        fake = FakeSummarizer()
+        self.assertIsNone(ringkas.run_weekly(date(2026, 11, 6), self.cfg, summarizer=fake))
+        self.assertEqual(fake.prompts, [])
+
+
 if __name__ == "__main__":
     unittest.main()
