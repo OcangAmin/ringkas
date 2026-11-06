@@ -304,7 +304,7 @@ class TestDue(unittest.TestCase):
         self.assertIn(date(2026, 11, 6), due(w(2026, 11, 7, 9), attempts={"2026-11-06": {"time": t - 5400, "n": 1}})[0])
         missing = due(w(2026, 11, 7, 9), done=[date(2026, 10, 1)], window=2)[1]
         self.assertEqual((missing[0], missing[-1]), (date(2026, 10, 8), date(2026, 11, 4)))
-        self.assertEqual(due(w(2026, 11, 7, 9), window=2)[1], [date(2026, 11, 4)])
+        self.assertEqual(due(w(2026, 11, 7, 9), window=2)[1], [])  # fresh install: nothing is "missing"
 
 
 class TestRunPending(unittest.TestCase):
@@ -389,13 +389,15 @@ class TestWeekly(unittest.TestCase):
         out = ringkas.run_weekly(date(2026, 11, 6), self.cfg, summarizer=fake)
         self.assertEqual(out, ringkas.data_dir() / "weekly" / "2026-11-02.md")
         text = out.read_text()
-        self.assertTrue(text.startswith("# Week 2026-10-20 – 2026-11-01\n## Main work"), text)
+        self.assertTrue(text.startswith("# Week 2026-10-26 – 2026-11-01\n## Main work"), text)  # one note per week
+        self.assertTrue((ringkas.data_dir() / "weekly" / "2026-10-26.md").exists())  # the 2026-10-20 week
         self.assertIn("## Not recorded\n- 2026-10-27: transcripts deleted before summarizing", text)
         self.assertNotIn("2026-11-03", text)
         self.assertEqual(self.remaining(), ["2026-11-02.md"])
-        self.assertIn("work 2026-11-01", fake.prompts[0])
-        self.assertNotIn("work 2026-11-02", fake.prompts[0])
-        self.assertIn("<daily-notes>", fake.prompts[0])
+        self.assertIn("work 2026-11-01", fake.prompts[-1])
+        self.assertNotIn("work 2026-10-20", fake.prompts[-1])
+        self.assertFalse(any("work 2026-11-02" in p for p in fake.prompts))
+        self.assertIn("<daily-notes>", fake.prompts[-1])
         self.assertEqual((ringkas.state_dir() / "missing").read_text(), "2026-11-03\tno transcripts\n")
         again = FakeSummarizer(ringkas.SummarizerError("must not be called"))
         self.assertEqual(ringkas.run_weekly(date(2026, 11, 6), self.cfg, summarizer=again), out)
@@ -459,6 +461,93 @@ class TestManifests(unittest.TestCase):
         self.assertIn("|| true", hooks)
         skill = (ROOT / "skills" / "ringkas" / "SKILL.md").read_text()
         self.assertTrue(skill.startswith("---\nname: ringkas\n"))
+
+
+class TestReviewFixes(unittest.TestCase):
+    def test_all_models_resting_means_no_call(self):
+        with TempHome():
+            cfg = ringkas.load_config(env={})
+            ringkas._write_json(ringkas.state_dir() / "models.json",
+                                {"gemini-flash-latest": 5000, "gemini-flash-lite-latest": 5000})
+            post = FakePost([])
+            with self.assertRaises(ringkas.SummarizerError):
+                ringkas.summarize("p", cfg, env={"GEMINI_API_KEY": "k"}, post=post, now=lambda: 1000)
+            self.assertEqual(post.calls, [])
+
+    def test_stop_after_failure_and_lock_refreshed(self):
+        with TempHome() as h:
+            (h / ".claude").mkdir()
+            (h / ".claude" / "settings.json").write_text('{"cleanupPeriodDays": 4}')
+            ringkas.data_dir().mkdir(parents=True)
+            (ringkas.data_dir() / "config.json").write_text('{"timezone": "Asia/Makassar"}')
+            for d in ("2026-11-04", "2026-11-05", "2026-11-06"):
+                make_day(h, ts=f"{d}T02:00:00Z", project=f"-p-{d}")
+            failing = FakeSummarizer(ringkas.SummarizerError("429"))
+            ringkas.run_pending(datetime(2026, 11, 7, 9, tzinfo=WITA), summarizer=failing, weekly=False)
+            self.assertEqual(len(failing.prompts), 1)  # one failure stops the run
+            lock = ringkas.state_dir() / "lock"
+            seen = []
+
+            def fake(prompt, cfg):
+                if not seen:
+                    os.utime(lock, (0, 0))
+                seen.append(lock.stat().st_mtime)
+                return "# x\n## Done\n- y"
+
+            ringkas.run_pending(datetime(2026, 11, 7, 23, tzinfo=WITA), summarizer=fake, weekly=False)
+            self.assertEqual(len(seen), 3)
+            self.assertGreater(seen[1], 0)  # refreshed before the next day
+
+    def test_weekly_one_file_per_week(self):
+        with TempHome():
+            daily = ringkas.data_dir() / "daily"
+            daily.mkdir(parents=True)
+            for d in ("2026-10-13", "2026-10-21", "2026-10-22", "2026-10-30", "2026-11-02"):
+                (daily / f"{d}.md").write_text(f"# {d}\n## Done\n- w {d}\n")
+            fake = FakeSummarizer("# W\n## Main work\n- x")
+            ringkas.run_weekly(date(2026, 11, 6), wita_cfg(), summarizer=fake)
+            weekly = sorted(p.name for p in (ringkas.data_dir() / "weekly").iterdir())
+            self.assertEqual(weekly, ["2026-10-19.md", "2026-10-26.md", "2026-11-02.md"])
+            self.assertTrue((ringkas.data_dir() / "weekly" / "2026-10-26.md").read_text()
+                            .startswith("# Week 2026-10-19 – 2026-10-25"))
+            self.assertEqual(sorted(p.name for p in daily.iterdir()), ["2026-11-02.md"])
+            self.assertEqual(len(fake.prompts), 3)
+            self.assertIn("w 2026-10-21", fake.prompts[1])
+            self.assertNotIn("w 2026-10-13", fake.prompts[1])
+
+    def test_claude_config_dir(self):
+        with TempHome() as h:
+            alt = h / "alt"
+            os.environ["CLAUDE_CONFIG_DIR"] = str(alt)
+            try:
+                write_jsonl(alt / "projects" / "-home-ana-blog" / "s.jsonl", [urow("hello", "2026-11-06T02:00:00Z")])
+                (alt / "settings.json").write_text('{"cleanupPeriodDays": 5}')
+                self.assertEqual(ringkas.data_dir(), alt / "ringkas")
+                self.assertEqual(ringkas.retention_days(), 4)
+                material = ringkas.summarize_day(date(2026, 11, 6), wita_cfg(), dry_run=True)
+                self.assertIn("hello", material)
+            finally:
+                del os.environ["CLAUDE_CONFIG_DIR"]
+
+    def test_redact_before_truncate_and_more_patterns(self):
+        with TempHome() as h:
+            write_jsonl(h / ".claude" / "projects" / "-p-a" / "s.jsonl",
+                        [urow("x" * 780 + " key AIza" + "y" * 40, "2026-11-06T02:00:00Z")])
+            self.assertNotIn("AIza", ringkas.collect(date(2026, 11, 6), WITA, h / ".claude" / "projects", [])[0].text)
+        for text, secret in [('{"api_key": "abc123def"}', "abc123def"), ("AKIAABCDEFGHIJKLMNOP", "AKIAABCDEFGHIJKLMNOP"),
+                             ("xoxb-123-456-abcdef", "xoxb-123"), ("https://bob:hunter2@host.io", "hunter2")]:
+            self.assertNotIn(secret, ringkas.redact(text), text)
+
+    def test_default_words_spare_code_talk(self):
+        with TempHome():
+            words = ringkas.load_words(ringkas.data_dir() / "sensitive-words.txt")
+            t = datetime(2026, 11, 6, 10, tzinfo=WITA)
+            m = lambda text: [ringkas.Msg(t, "p", "user", text)]
+            for text in ["set font-weight: bold", "transfer the file to the server", "balance the tree",
+                         "pin the dependency version"]:
+                self.assertEqual(ringkas.filter_sensitive(m(text), words)[1], 0, text)
+            for text in ["my account balance", "bank transfer done", "my body weight", "saldo rekening"]:
+                self.assertEqual(ringkas.filter_sensitive(m(text), words)[1], 1, text)
 
 
 if __name__ == "__main__":

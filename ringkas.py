@@ -41,8 +41,14 @@ def home():
     return Path(os.environ.get("HOME", "~")).expanduser()
 
 
+def claude_dir():
+    """Claude Code's config folder (~/.claude, or $CLAUDE_CONFIG_DIR when set)."""
+    custom = os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(custom).expanduser() if custom else home() / ".claude"
+
+
 def data_dir():
-    return home() / ".claude" / "ringkas"
+    return claude_dir() / "ringkas"
 
 
 def state_dir():
@@ -81,7 +87,7 @@ def retention_days(settings_path=None):
     """How many past days still have transcripts: cleanupPeriodDays minus one day of safety margin."""
     days = DEFAULT_RETENTION
     try:
-        value = json.loads(Path(settings_path or home() / ".claude" / "settings.json").read_text())["cleanupPeriodDays"]
+        value = json.loads(Path(settings_path or claude_dir() / "settings.json").read_text())["cleanupPeriodDays"]
         if isinstance(value, int) and not isinstance(value, bool) and value > 0:
             days = value
     except (OSError, ValueError, KeyError, TypeError):
@@ -160,7 +166,7 @@ def collect(day, tzinfo, projects_dir, ignore):
                     if text is None:
                         text, role = assistant_text(d), "assistant"
                     if text:
-                        found.add(Msg(when, label, role, text[:MAX_PER_MESSAGE]))
+                        found.add(Msg(when, label, role, redact(text)[:MAX_PER_MESSAGE]))  # redact first
     return sorted(found)
 
 
@@ -171,7 +177,8 @@ DEFAULT_WORDS = """# ringkas: messages containing any of these words/phrases are
 # Credentials
 password
 passcode
-PIN
+PIN code
+kode PIN
 OTP
 CVV
 seed phrase
@@ -184,7 +191,7 @@ routing number
 IBAN
 credit card
 salary
-balance
+account balance
 loan
 debt
 invoice amount
@@ -197,13 +204,16 @@ pinjaman
 cicilan
 tagihan
 mutasi
-transfer
+bank transfer
+wire transfer
+transfer uang
+bukti transfer
 # Health
 diagnosis
 medication
 blood pressure
 heart rate
-weight
+body weight
 detak jantung
 tekanan darah
 berat badan
@@ -249,8 +259,11 @@ _SECRETS = [
     (re.compile(r"tskey-[A-Za-z0-9-]+"), "▒"),
     (re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+"), "▒"),
     (re.compile(r"(Bearer|Basic)\s+\S+", re.IGNORECASE), r"\1 ▒"),
-    (re.compile(r"(\w*(?:key|token|secret|password|passwd|pass|sandi|kunci)\w*)(\s*[:=]\s*)(\S+)", re.IGNORECASE),
-     r"\1\2▒"),
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "▒"),
+    (re.compile(r"xox[abposr]-[A-Za-z0-9-]+"), "▒"),
+    (re.compile(r"(://[^/\s:@]+:)[^@\s/]+@"), r"\1▒@"),  # user:password@host
+    (re.compile(r"(\w*(?:key|token|secret|password|passwd|pass|sandi|kunci)\w*)([\"']?\s*[:=]\s*[\"']?)([^\s\"',&]+)",
+                re.IGNORECASE), r"\1\2▒"),
     (re.compile(r"(--?(?:password|pass|token|key|secret)\s+)(\S+)", re.IGNORECASE), r"\1▒"),
 ]
 
@@ -344,7 +357,9 @@ def summarize(prompt, cfg, *, env=os.environ, post=http_post, now=time.time):
     except (OSError, ValueError):
         skip = {}
     models = list(cfg.get("models") or DEFAULTS["models"])
-    order = [m for m in models if skip.get(m, 0) <= now()] or models
+    order = [m for m in models if skip.get(m, 0) <= now()]
+    if not order:  # every model is rate-limited or failing: do not hammer the API
+        raise SummarizerError("all models are resting after recent errors")
     reasons = []
     for model in order:
         status, data = post(GEMINI_URL.format(model=model), {"x-goog-api-key": key},
@@ -420,7 +435,7 @@ def tidy(text, title):
 
 
 def projects_dir():
-    return home() / ".claude" / "projects"
+    return claude_dir() / "projects"
 
 
 def summarize_day(day, cfg, *, summarizer=summarize, dry_run=False):
@@ -430,7 +445,7 @@ def summarize_day(day, cfg, *, summarizer=summarize, dry_run=False):
     if not msgs:
         return None
     msgs, skipped = filter_sensitive(msgs, load_words(data_dir() / "sensitive-words.txt"))
-    material = build_material([m._replace(text=redact(m.text)) for m in msgs], int(cfg["max_chars_per_day"]), tzinfo)
+    material = build_material(msgs, int(cfg["max_chars_per_day"]), tzinfo)
     if dry_run:
         return material
     title = f"# {day.isoformat()} ({day.strftime('%A')})"
@@ -468,7 +483,9 @@ def due_days(now, done, attempts, window):
         due.append(day)
     edge = today - dt.timedelta(days=window + 1)
     old = [d for d in done if d <= edge]
-    start = max(max(old) + dt.timedelta(days=1), today - dt.timedelta(days=LOOKBACK)) if old else edge
+    if not old:  # fresh install (or nothing old yet): days before it were never ours to record
+        return due, []
+    start = max(max(old) + dt.timedelta(days=1), today - dt.timedelta(days=LOOKBACK))
     gone = [start + dt.timedelta(days=i) for i in range((edge - start).days + 1)]
     return due, [d for d in gone if d not in done]
 
@@ -547,6 +564,7 @@ def run_pending(now=None, *, summarizer=summarize, weekly=True):
             missing(day, "summarizer kept failing until transcripts were deleted"
                     if day.isoformat() in failed_before else "transcripts deleted before summarizing")
         for day in due:
+            os.utime(lock)  # a long catch-up must not look like a stale lock to another session
             try:
                 out = summarize_day(day, cfg, summarizer=summarizer)
             except NoKeyError as e:
@@ -556,7 +574,7 @@ def run_pending(now=None, *, summarizer=summarize, weekly=True):
                 _, n = _attempt(attempts.get(day.isoformat(), {"time": 0, "n": 0}))
                 attempts[day.isoformat()] = {"time": now.timestamp(), "n": n + 1}
                 result(day, f"failed (attempt {n + 1}): {e}")
-                continue
+                break  # the summarizer is down: leave the other days for a later session
             attempts.pop(day.isoformat(), None)
             if out is None and not _has_transcripts(day, tzinfo):
                 missing(day, "no transcripts")
@@ -610,44 +628,52 @@ def _note_day(path):
 
 
 def run_weekly(today, cfg, *, summarizer=summarize):
-    """Roll every daily note dated before this week's rollup day into weekly/<rollup day>.md, then delete exactly
-    those daily notes. Returns the weekly note path, or None when there was nothing to do or the summarizer failed
-    (daily notes are then kept and retried next session)."""
-    rd = rollup_day(today, cfg.get("weekly_day", "monday"))
-    out = data_dir() / "weekly" / f"{rd.isoformat()}.md"
-    if out.exists():
-        return out
+    """Roll daily notes dated before this week's rollup day into one weekly note per week (weekly/<rollup day>.md),
+    oldest week first, then delete exactly the daily notes of that week. Returns the newest weekly note path, or None
+    when there was nothing to do or the summarizer failed (remaining daily notes are kept and retried next session)."""
+    wd = cfg.get("weekly_day", "monday")
+    rd = rollup_day(today, wd)
+    latest = data_dir() / "weekly" / f"{rd.isoformat()}.md"
     notes = sorted(p for p in (data_dir() / "daily").glob("*.md") if _note_day(p) and _note_day(p) < rd)
-    if not notes:
-        return None
-    start, end = _note_day(notes[0]), rd - dt.timedelta(days=1)
-    title = f"# Week {start.isoformat()} – {end.isoformat()}"
+    weeks = {}
+    for p in notes:
+        weeks.setdefault(rollup_day(_note_day(p), wd) + dt.timedelta(days=7), []).append(p)
     missing_file = state_dir() / "missing"
-    try:
-        missing = [l for l in missing_file.read_text().splitlines() if l.strip()]
-    except OSError:
-        missing = []
-    gone = [l for l in missing if l.split("\t")[0] < rd.isoformat()]
-    try:
-        text = tidy(summarizer(WEEKLY_PROMPT.format(language=_language_line(cfg), start=start, end=end,
-                                                    notes="\n\n".join(p.read_text().strip() for p in notes)), cfg),
-                    title)
-        if "\n## " not in text:
-            raise SummarizerError(f"unexpected weekly shape: {text[len(title):][:80]!r}")
-    except Exception as e:
-        log(f"weekly {rd} failed, daily notes kept: {e}")
-        return None
-    if gone:
-        text += "\n\n## Not recorded\n" + "\n".join(
-            f"- {l.split(chr(9))[0]}: {l.split(chr(9), 1)[1] if chr(9) in l else 'not recorded'}" for l in gone)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(text + "\n")
-    for p in notes:  # exactly the notes that went into the summary
-        p.unlink()
-    if gone:
-        missing_file.write_text("".join(l + "\n" for l in missing if l not in gone))
-    log(f"weekly {out} written, {len(notes)} daily notes removed")
-    return out
+    first = True
+    for end_day in sorted(weeks):
+        out = data_dir() / "weekly" / f"{end_day.isoformat()}.md"
+        if out.exists():
+            first = False
+            continue
+        start, end = end_day - dt.timedelta(days=7), end_day - dt.timedelta(days=1)
+        title = f"# Week {start.isoformat()} – {end.isoformat()}"
+        try:
+            missing = [l for l in missing_file.read_text().splitlines() if l.strip()]
+        except OSError:
+            missing = []
+        gone = [l for l in missing if l.split("\t")[0] <= end.isoformat()
+                and (first or l.split("\t")[0] >= start.isoformat())]
+        try:
+            text = tidy(summarizer(WEEKLY_PROMPT.format(language=_language_line(cfg), start=start, end=end,
+                                                        notes="\n\n".join(p.read_text().strip() for p in weeks[end_day])),
+                                   cfg), title)
+            if "\n## " not in text:
+                raise SummarizerError(f"unexpected weekly shape: {text[len(title):][:80]!r}")
+        except Exception as e:
+            log(f"weekly {end_day} failed, daily notes kept: {e}")
+            return None
+        if gone:
+            text += "\n\n## Not recorded\n" + "\n".join(
+                f"- {l.split(chr(9))[0]}: {l.split(chr(9), 1)[1] if chr(9) in l else 'not recorded'}" for l in gone)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text + "\n")
+        for p in weeks[end_day]:  # exactly the notes that went into this summary
+            p.unlink()
+        if gone:
+            missing_file.write_text("".join(l + "\n" for l in missing if l not in gone))
+        log(f"weekly {out} written, {len(weeks[end_day])} daily notes removed")
+        first = False
+    return latest if latest.exists() else None
 
 
 # ---------------------------------------------------------------- hook

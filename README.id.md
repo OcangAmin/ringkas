@@ -11,7 +11,7 @@
 - **Nol token Claude untuk meringkas.** Kuota Claude Anda untuk bekerja, bukan untuk mencatat.
 - **Tidak ada yang disuntikkan ke sesi.** Catatan hanya dibaca saat Anda bertanya. Biaya per sesi: deskripsi satu baris skill (±60 token).
 - **Tanpa daemon, tanpa cron.** Satu hook SessionStart yang langsung selesai dan mengejar hari yang terlewat di latar.
-- **Privasi didahulukan.** Hanya teks percakapan yang diringkas (bukan keluaran alat atau isi berkas); pesan soal uang, kesehatan, atau kredensial dilewati; kunci API dan token disamarkan.
+- **Privasi didahulukan.** Hanya teks percakapan yang diringkas (bukan keluaran alat, bukan berkas yang dibaca alat); pesan soal uang, kesehatan, atau kredensial dilewati; kunci API dan token disamarkan.
 
 ## Masalahnya
 
@@ -42,7 +42,7 @@ Besok paginya:
 > **Anda:** kemarin kita sampai mana?
 > **Claude:** *(membaca catatan)* Tanggal 6 Nov Anda memperbaiki race checkout di shop-api dan menjalankan backfill di staging. Artikel blog soal Postgres locks sudah draf; koreksi dan terbit direncanakan Senin.
 
-Setiap minggu (bawaan Senin) catatan harian digabung ke `weekly/<tanggal>.md` lalu yang harian dihapus, jadi foldernya tetap kecil.
+Setiap minggu (bawaan Senin) catatan harian tiap minggu yang sudah lewat digabung ke satu `weekly/<tanggal>.md` lalu yang harian dihapus, jadi foldernya tetap kecil.
 
 ## Cara kerja
 
@@ -75,7 +75,7 @@ Per Nov 2026, berdasarkan README dan kode masing-masing proyek; detail bisa beru
 | Kuota Claude untuk memori | **0** | ya, secara bawaan | ya | 0 |
 | Tambahan di setiap sesi | ±60 token (deskripsi skill) | observasi terbaru disuntik di awal | berkas memori disuntik di awal | 0 |
 | Hook | 1 (SessionStart) | 11 | 4 | 0 |
-| Proses latar | tidak ada | layanan worker (Bun) + SQLite/Chroma | tidak ada | tidak ada |
+| Proses latar | singkat, sekali per awal sesi | layanan worker (Bun) + SQLite/Chroma yang hidup terus | tidak ada | tidak ada |
 | Dependensi | pustaka standar Python 3.9+ | Node, Bun, uv | Python, bash, jq | — |
 | Yang keluar dari komputer | teks percakapan tersaring, ke peringkas pilihan Anda | observasi alat, ke peringkas | potongan transkrip, ke Claude | tidak ada |
 
@@ -97,7 +97,7 @@ export GEMINI_API_KEY="kunci-anda"
 Selesai. Saat sesi berikutnya dimulai, hari-hari yang sudah ada langsung diringkas. Cek dengan:
 
 ```bash
-python3 ~/.claude/plugins/cache/ringkas/ringkas/*/ringkas.py status
+python3 "$(ls -d ~/.claude/plugins/cache/ringkas/ringkas/*/ | sort -V | tail -n 1)ringkas.py" status
 ```
 
 Jalan di Linux, macOS, dan Termux (Android). Windows belum diuji.
@@ -112,9 +112,11 @@ Jalan di Linux, macOS, dan Termux (Android). Windows belum diuji.
 
 Endpoint OpenAI-compatible apa pun bisa (OpenRouter, LM Studio, vLLM…). Isi `OPENAI_API_KEY` bila perlu.
 
+Model lokal kecil punya jendela konteks kecil (bawaan Ollama hanya beberapa ribu token dan diam-diam memotong prompt yang lebih panjang). Naikkan (`OLLAMA_CONTEXT_LENGTH=32768 ollama serve`) atau kirim lebih sedikit teks per hari (`"max_chars_per_day": 8000`).
+
 ## Privasi
 
-- **Hanya teks percakapan** (pesan Anda dan jawaban Claude) yang diambil. Pemanggilan alat, keluaran alat, isi berkas, gambar, dan transkrip sub-agent tidak pernah dikirim.
+- **Hanya teks percakapan** (pesan Anda dan jawaban Claude) yang diambil. Pemanggilan alat, keluaran alat, gambar, dan transkrip sub-agent tidak pernah dikirim. Jawaban Claude tetap bisa mengutip potongan kode atau keluaran, dan nama folder proyek dipakai sebagai label, jadi anggap catatan ini sebagai "apa yang kita bicarakan".
 - **Topik sensitif dilewati.** Pesan yang memuat kata dari `~/.claude/ringkas/sensitive-words.txt` diganti penanda, begitu juga jawaban Claude atasnya. Daftar bawaan mencakup kredensial, uang, dan kesehatan dalam bahasa Inggris dan Indonesia, termasuk akhiran (`salary`/`salaries`, `saldo`/`saldonya`). Silakan diedit.
 - **Rahasia disamarkan** sebelum dikirim: kunci privat, `sk-…`, `AIza…`, `ghp_…`, `tskey-…`, JWT, `Bearer …`, `*_KEY=`, `token:`, `--password x`.
 - **Abaikan seluruh proyek** dengan `"ignore_projects": ["*klien*"]`.
@@ -122,7 +124,7 @@ Endpoint OpenAI-compatible apa pun bisa (OpenRouter, LM Studio, vLLM…). Isi `O
 
 ## Pengaturan
 
-`~/.claude/ringkas/config.json` (opsional); setiap kunci juga bisa diisi lewat `RINGKAS_<KUNCI>` (mis. `RINGKAS_LANGUAGE=id`).
+`~/.claude/ringkas/config.json` (opsional); setiap kunci juga bisa diisi lewat `RINGKAS_<KUNCI>` (mis. `RINGKAS_LANGUAGE=id`). Kalau Anda memakai `CLAUDE_CONFIG_DIR`, semuanya disimpan di sana, bukan di `~/.claude`.
 
 | Kunci | Bawaan | Arti |
 |---|---|---|

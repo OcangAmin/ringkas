@@ -11,7 +11,7 @@
 - **Zero Claude tokens for summarizing.** Your Claude quota is for work, not for bookkeeping.
 - **Nothing injected into your sessions.** Notes are read only when you ask. Cost per session: the skill's one-line description (~60 tokens).
 - **No daemon, no cron.** One SessionStart hook that returns instantly and catches up on any missed days in the background.
-- **Privacy first.** Only conversation text is summarized (never tool output or file contents); messages about money, health or credentials are skipped; API keys and tokens are redacted.
+- **Privacy first.** Only conversation text is summarized (no tool output, no files read by tools); messages about money, health or credentials are skipped; API keys and tokens are redacted.
 
 ## The problem
 
@@ -42,7 +42,7 @@ Next morning:
 > **You:** where did we leave off yesterday?
 > **Claude:** *(reads the note)* On 6 Nov you fixed the checkout race in shop-api and ran the backfill on staging. The blog post on Postgres locks is drafted; proofreading and publishing were planned for Monday.
 
-Every week (Monday by default) the daily notes are merged into `weekly/<date>.md` and the dailies are removed, so the folder stays small.
+Every week (Monday by default) each finished week's daily notes are merged into one `weekly/<date>.md` and the dailies are removed, so the folder stays small.
 
 ## How it works
 
@@ -75,7 +75,7 @@ As of Nov 2026, based on each project's README and source; details may change.
 | Claude quota used for memory | **0** | yes, by default | yes | 0 |
 | Added to every session | ~60 tokens (skill description) | recent observations injected at start | memory files injected at start | 0 |
 | Hooks | 1 (SessionStart) | 11 | 4 | 0 |
-| Background process | none | worker service (Bun) + SQLite/Chroma | none | none |
+| Background process | short-lived, once per session start | long-running worker service (Bun) + SQLite/Chroma | none | none |
 | Dependencies | Python 3.9+ standard library | Node, Bun, uv | Python, bash, jq | — |
 | What leaves your machine | filtered conversation text, to the summarizer you choose | tool observations, to the summarizer | transcript excerpts, to Claude | nothing |
 
@@ -97,7 +97,7 @@ export GEMINI_API_KEY="your-key"
 That's it. The next session start summarizes the days you already have. Check with:
 
 ```bash
-python3 ~/.claude/plugins/cache/ringkas/ringkas/*/ringkas.py status
+python3 "$(ls -d ~/.claude/plugins/cache/ringkas/ringkas/*/ | sort -V | tail -n 1)ringkas.py" status
 ```
 
 Works on Linux, macOS and Termux (Android). Windows is untested.
@@ -112,9 +112,11 @@ Works on Linux, macOS and Termux (Android). Windows is untested.
 
 Any OpenAI-compatible endpoint works (OpenRouter, LM Studio, vLLM…). Set `OPENAI_API_KEY` if it needs one.
 
+Small local models have small context windows (Ollama defaults to a few thousand tokens and silently cuts longer prompts). Either raise it (`OLLAMA_CONTEXT_LENGTH=32768 ollama serve`) or send less text per day (`"max_chars_per_day": 8000`).
+
 ## Privacy
 
-- **Only conversation text** (your messages and Claude's replies) is collected. Tool calls, tool output, file contents, images and sub-agent transcripts are never sent.
+- **Only conversation text** (your messages and Claude's replies) is collected. Tool calls, tool output, images and sub-agent transcripts are never sent. Claude's replies can still quote snippets of code or output, and project folder names are used as labels, so treat the notes as "what we talked about".
 - **Sensitive topics are skipped.** Any message containing a word from `~/.claude/ringkas/sensitive-words.txt` is replaced by a placeholder, and so are Claude's replies to it. The default list covers credentials, money and health in English and Indonesian, including suffixes (`salary`/`salaries`, `saldo`/`saldonya`). Edit it freely.
 - **Secrets are redacted** before sending: private keys, `sk-…`, `AIza…`, `ghp_…`, `tskey-…`, JWTs, `Bearer …`, `*_KEY=`, `token:`, `--password x`.
 - **Ignore whole projects** with `"ignore_projects": ["*client*"]`.
@@ -122,7 +124,7 @@ Any OpenAI-compatible endpoint works (OpenRouter, LM Studio, vLLM…). Set `OPEN
 
 ## Configuration
 
-Optional `~/.claude/ringkas/config.json`; every key can also be set as `RINGKAS_<KEY>` (e.g. `RINGKAS_LANGUAGE=en`).
+Optional `~/.claude/ringkas/config.json`; every key can also be set as `RINGKAS_<KEY>` (e.g. `RINGKAS_LANGUAGE=en`). If you use `CLAUDE_CONFIG_DIR`, everything lives there instead of `~/.claude`.
 
 | Key | Default | Meaning |
 |---|---|---|
