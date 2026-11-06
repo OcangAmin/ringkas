@@ -174,5 +174,68 @@ class TestMaterial(unittest.TestCase):
                          "[10:00] [blog] user: hi")
 
 
+class FakePost:
+    def __init__(self, replies):
+        self.replies, self.calls = list(replies), []
+
+    def __call__(self, url, headers, body, timeout):
+        self.calls.append((url, headers, body))
+        return self.replies.pop(0)
+
+
+def gemini_ok(text):
+    return 200, {"candidates": [{"content": {"parts": [{"text": text}]}}]}
+
+
+class TestSummarize(unittest.TestCase):
+    def test_no_key(self):
+        with TempHome():
+            post = FakePost([])
+            with self.assertRaises(ringkas.NoKeyError):
+                ringkas.summarize("p", ringkas.load_config(env={}), env={}, post=post)
+            self.assertEqual(post.calls, [])
+
+    def test_model_ladder_and_skip_memory(self):
+        with TempHome():
+            cfg = ringkas.load_config(env={})
+            post = FakePost([(429, {}), gemini_ok("ok"), gemini_ok("again")])
+            self.assertEqual(ringkas.summarize("p", cfg, env={"GEMINI_API_KEY": "k"}, post=post, now=lambda: 1000), "ok")
+            self.assertIn("gemini-flash-latest:generateContent", post.calls[0][0])
+            self.assertEqual(post.calls[0][1]["x-goog-api-key"], "k")
+            self.assertIn("gemini-flash-lite-latest", post.calls[1][0])
+            skip = json.loads((ringkas.state_dir() / "models.json").read_text())
+            self.assertEqual(skip["gemini-flash-latest"], 1000 + 6 * 3600)
+            ringkas.summarize("p", cfg, env={"GEMINI_API_KEY": "k"}, post=post, now=lambda: 2000)
+            self.assertIn("gemini-flash-lite-latest", post.calls[2][0])
+
+    def test_blocked_and_broken(self):
+        with TempHome():
+            cfg = ringkas.load_config(env={})
+            post = FakePost([(200, {"promptFeedback": {"blockReason": "SAFETY"}}), (0, None)])
+            with self.assertRaises(ringkas.SummarizerError):
+                ringkas.summarize("p", cfg, env={"GEMINI_API_KEY": "k"}, post=post, now=lambda: 1000)
+            skip = json.loads((ringkas.state_dir() / "models.json").read_text())
+            self.assertNotIn("gemini-flash-latest", skip)  # blocked answer: not the model's fault
+            self.assertEqual(skip["gemini-flash-lite-latest"], 1000 + 1800)
+
+    def test_openai_compatible(self):
+        with TempHome():
+            cfg = dict(ringkas.load_config(env={}), provider="openai", openai_base_url="http://x/v1/",
+                       openai_model="llama3.1")
+            post = FakePost([(200, {"choices": [{"message": {"content": "hai"}}]})])
+            self.assertEqual(ringkas.summarize("p", cfg, env={}, post=post), "hai")
+            url, headers, body = post.calls[0]
+            self.assertEqual(url, "http://x/v1/chat/completions")
+            self.assertNotIn("Authorization", headers)
+            self.assertEqual(body["model"], "llama3.1")
+            post = FakePost([(200, {"choices": [{"message": {"content": "x"}}]})])
+            ringkas.summarize("p", cfg, env={"OPENAI_API_KEY": "s"}, post=post)
+            self.assertEqual(post.calls[0][1]["Authorization"], "Bearer s")
+            with self.assertRaises(ringkas.NoKeyError):
+                ringkas.summarize("p", dict(cfg, openai_base_url=""), env={}, post=post)
+            with self.assertRaises(ringkas.SummarizerError):
+                ringkas.summarize("p", cfg, env={}, post=FakePost([(500, None)]))
+
+
 if __name__ == "__main__":
     unittest.main()

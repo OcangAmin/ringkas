@@ -14,6 +14,9 @@ import fnmatch
 import json
 import os
 import re
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
@@ -268,3 +271,93 @@ def build_material(msgs, max_chars, tzinfo):
     if left:
         lines.append(f"(… {left} more messages not included)")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- summarizers
+
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+
+class NoKeyError(Exception):
+    """No API key / endpoint configured for the chosen provider."""
+
+
+class SummarizerError(Exception):
+    """Every model failed."""
+
+
+def http_post(url, headers, body, timeout):
+    """(status, parsed JSON or None). Network errors and timeouts give (0, None)."""
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                 headers={"content-type": "application/json", **headers})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            status, raw = r.status, r.read()
+    except urllib.error.HTTPError as e:
+        status, raw = e.code, e.read()
+    except (OSError, ValueError):
+        return 0, None
+    try:
+        return status, json.loads(raw)
+    except ValueError:
+        return status, None
+
+
+def _skip_seconds(status):
+    if status == 429:
+        return 6 * 3600
+    if status in (400, 403, 404):
+        return 24 * 3600
+    return 30 * 60  # 5xx, timeout, network
+
+
+def summarize(prompt, cfg, *, env=os.environ, post=http_post, now=time.time):
+    if cfg.get("provider") == "openai":
+        base = (cfg.get("openai_base_url") or "").rstrip("/")
+        if not base:
+            raise NoKeyError("set openai_base_url (e.g. http://localhost:11434/v1)")
+        headers = {"Authorization": f"Bearer {env['OPENAI_API_KEY']}"} if env.get("OPENAI_API_KEY") else {}
+        status, data = post(f"{base}/chat/completions", headers,
+                            {"model": cfg.get("openai_model"), "messages": [{"role": "user", "content": prompt}]}, 180)
+        try:
+            text = data["choices"][0]["message"]["content"].strip()
+        except (TypeError, KeyError, IndexError, AttributeError):
+            text = ""
+        if status != 200 or not text:
+            raise SummarizerError(f"openai-compatible endpoint: HTTP {status}")
+        return text
+
+    key = env.get("GEMINI_API_KEY")
+    if not key:
+        raise NoKeyError("set GEMINI_API_KEY (free key: https://aistudio.google.com/apikey)")
+    skip_file = state_dir() / "models.json"
+    try:
+        skip = json.loads(skip_file.read_text())
+    except (OSError, ValueError):
+        skip = {}
+    models = list(cfg.get("models") or DEFAULTS["models"])
+    order = [m for m in models if skip.get(m, 0) <= now()] or models
+    reasons = []
+    for model in order:
+        status, data = post(GEMINI_URL.format(model=model), {"x-goog-api-key": key},
+                            {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}, 90)
+        if status == 200:
+            try:
+                text = "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"]).strip()
+            except (TypeError, KeyError, IndexError, AttributeError):
+                text = ""
+            if text:
+                if skip.pop(model, None) is not None:
+                    _write_json(skip_file, skip)
+                return text
+            reasons.append(f"{model}: empty answer")
+            continue
+        skip[model] = now() + _skip_seconds(status)
+        _write_json(skip_file, skip)
+        reasons.append(f"{model}: HTTP {status or 'timeout/network'}")
+    raise SummarizerError("; ".join(reasons))
+
+
+def _write_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value))
