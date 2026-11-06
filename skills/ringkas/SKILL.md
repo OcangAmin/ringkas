@@ -12,6 +12,8 @@ Notes are written automatically by the ringkas plugin (one file per day across a
 
 Steps:
 1. Work out the date(s) the user means (local time) and read the matching file(s). List the folders when unsure.
+   Reading `~/.claude` needs permission. If the read is blocked, ask the user to approve it, or to add
+   `"Read(~/.claude/ringkas/**)"` to `permissions.allow` in `~/.claude/settings.json` so it never asks again.
 2. If nothing is there, run `python3 "${CLAUDE_PLUGIN_ROOT}/ringkas.py" status` and tell the user what it says
    (no API key, not summarized yet, or day not recorded).
 3. Answer from the notes, citing the date.

@@ -550,5 +550,70 @@ class TestReviewFixes(unittest.TestCase):
                 self.assertEqual(ringkas.filter_sensitive(m(text), words)[1], 1, text)
 
 
+class TestV011(unittest.TestCase):
+    def test_late_daily_note_appended_to_existing_week(self):
+        with TempHome():
+            weekly, daily = ringkas.data_dir() / "weekly", ringkas.data_dir() / "daily"
+            weekly.mkdir(parents=True)
+            daily.mkdir(parents=True)
+            (weekly / "2026-11-02.md").write_text("# Week 2026-10-26 – 2026-11-01\n## Main work\n- x\n")
+            (daily / "2026-11-01.md").write_text("# 2026-11-01 (Sunday)\n## Done\n- late work\n")
+            fake = FakeSummarizer(ringkas.SummarizerError("must not be called"))
+            ringkas.run_weekly(date(2026, 11, 10), wita_cfg(), summarizer=fake)
+            self.assertEqual(fake.prompts, [])
+            text = (weekly / "2026-11-02.md").read_text()
+            self.assertIn("## Added later", text)
+            self.assertIn("- late work", text)
+            self.assertEqual(list(daily.iterdir()), [])
+
+    def test_auto_timezone_follows_dst(self):
+        old = os.environ.get("TZ")
+        os.environ["TZ"] = "America/New_York"
+        try:
+            zone = ringkas.tz({"timezone": "auto"})
+            self.assertEqual(datetime(2026, 1, 15, 12, tzinfo=zone).utcoffset().total_seconds(), -5 * 3600)
+            self.assertEqual(datetime(2026, 7, 15, 12, tzinfo=zone).utcoffset().total_seconds(), -4 * 3600)
+        finally:
+            if old is None:
+                del os.environ["TZ"]
+            else:
+                os.environ["TZ"] = old
+
+    def test_config_validation(self):
+        with TempHome():
+            ringkas.data_dir().mkdir(parents=True)
+            (ringkas.data_dir() / "config.json").write_text(
+                '{"ignore_projects": "*client*", "weekly_day": "funday", "timezone": "Mars/Base", '
+                '"max_chars_per_day": "lots", "models": "gemini-x"}')
+            cfg = ringkas.load_config(env={"RINGKAS_LANGUAGE": "id"})
+            self.assertEqual(cfg["ignore_projects"], ["*client*"])
+            self.assertEqual(cfg["models"], ["gemini-x"])
+            self.assertEqual(cfg["weekly_day"], "monday")
+            self.assertEqual(cfg["timezone"], "auto")
+            self.assertEqual(cfg["max_chars_per_day"], 40000)
+            self.assertEqual(len(cfg["_warnings"]), 3)
+            env_cfg = ringkas.load_config(env={"RINGKAS_IGNORE_PROJECTS": "*a*, *b*"})
+            self.assertEqual(env_cfg["ignore_projects"], ["*a*", "*b*"])
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                ringkas.main(["status"])
+            self.assertIn("Config warnings", out.getvalue())
+            self.assertIn("weekly_day", out.getvalue())
+
+    def test_run_date_errors_are_friendly(self):
+        with TempHome():
+            for argv in (["run", "--date"], ["run", "--date", "6-11-2026"]):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    self.assertEqual(ringkas.main(argv), 2)
+                self.assertIn("YYYY-MM-DD", out.getvalue())
+
+    def test_skill_mentions_permission_rule(self):
+        skill = (ROOT / "skills" / "ringkas" / "SKILL.md").read_text()
+        self.assertIn("Read(~/.claude/ringkas/**)", skill)
+        self.assertIn("Read(~/.claude/ringkas/**)", (ROOT / "README.md").read_text())
+        self.assertIn("Read(~/.claude/ringkas/**)", (ROOT / "README.id.md").read_text())
+
+
 if __name__ == "__main__":
     unittest.main()

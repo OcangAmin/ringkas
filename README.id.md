@@ -94,6 +94,12 @@ Lalu beri kunci Gemini gratis (buat di <https://aistudio.google.com/apikey>) di 
 export GEMINI_API_KEY="kunci-anda"
 ```
 
+Opsional tapi disarankan: izinkan Claude membaca catatan tanpa bertanya setiap kali. Tambahkan ini ke `~/.claude/settings.json`:
+
+```json
+{ "permissions": { "allow": ["Read(~/.claude/ringkas/**)"] } }
+```
+
 Selesai. Saat sesi berikutnya dimulai, hari-hari yang sudah ada langsung diringkas. Cek dengan:
 
 ```bash

@@ -74,13 +74,55 @@ def load_config(env=os.environ):
             try:
                 cfg[key] = json.loads(raw)
             except ValueError:
-                pass
+                cfg[key] = raw  # e.g. RINGKAS_IGNORE_PROJECTS='*a*, *b*'; normalized below
+    return _validate(cfg)
+
+
+def _validate(cfg):
+    """Fix common shapes (a string where a list belongs) and fall back to defaults for impossible values, keeping a
+    list of warnings that `status` shows."""
+    warnings = []
+    for key in ("models", "ignore_projects"):
+        if isinstance(cfg[key], str):
+            cfg[key] = [s.strip() for s in cfg[key].split(",") if s.strip()]
+        if not (isinstance(cfg[key], list) and all(isinstance(s, str) for s in cfg[key])):
+            warnings.append(f"{key}: expected a list of strings, using the default")
+            cfg[key] = list(DEFAULTS[key])
+    checks = {
+        "provider": lambda v: v in ("gemini", "openai"),
+        "weekly_day": lambda v: str(v).lower() in WEEKDAYS,
+        "max_chars_per_day": lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0,
+        "timezone": lambda v: v in ("", "auto") or _zone(v) is not None,
+    }
+    for key, ok in checks.items():
+        if not ok(cfg[key]):
+            warnings.append(f"{key}: {cfg[key]!r} is not valid, using {DEFAULTS[key]!r}")
+            cfg[key] = DEFAULTS[key]
+    cfg["_warnings"] = warnings
     return cfg
+
+
+def _zone(name):
+    try:
+        return ZoneInfo(str(name))
+    except (ValueError, KeyError, OSError):
+        return None
+
+
+def _system_zone():
+    """The system's named time zone (so DST is handled), from $TZ or /etc/localtime; None when unknown."""
+    name = os.environ.get("TZ", "").lstrip(":")
+    if not name:
+        link = os.path.realpath("/etc/localtime")
+        name = link.split("zoneinfo/", 1)[1] if "zoneinfo/" in link else ""
+    return _zone(name) if name else None
 
 
 def tz(cfg):
     name = cfg.get("timezone", "auto")
-    return dt.datetime.now().astimezone().tzinfo if name in ("", "auto") else ZoneInfo(name)
+    if name in ("", "auto"):
+        return _system_zone() or dt.datetime.now().astimezone().tzinfo
+    return _zone(name) or dt.datetime.now().astimezone().tzinfo
 
 
 def retention_days(settings_path=None):
@@ -642,7 +684,12 @@ def run_weekly(today, cfg, *, summarizer=summarize):
     first = True
     for end_day in sorted(weeks):
         out = data_dir() / "weekly" / f"{end_day.isoformat()}.md"
-        if out.exists():
+        if out.exists():  # a day summarized after its week was rolled up: append it as is, no extra model call
+            out.write_text(out.read_text().rstrip("\n") + "\n\n## Added later\n" +
+                           "\n\n".join(p.read_text().strip() for p in weeks[end_day]) + "\n")
+            for p in weeks[end_day]:
+                p.unlink()
+            log(f"weekly {out}: {len(weeks[end_day])} late daily notes appended")
             first = False
             continue
         start, end = end_day - dt.timedelta(days=7), end_day - dt.timedelta(days=1)
@@ -705,6 +752,9 @@ def status():
         lines = []
     print(f"Missing days: {', '.join(l.replace(chr(9), ' (') + ')' for l in lines) if lines else 'none'}")
     print(f"Data dir: {data_dir()}")
+    warnings = load_config()["_warnings"]
+    if warnings:
+        print("Config warnings: " + "; ".join(warnings))
     return 0
 
 
@@ -716,7 +766,11 @@ def main(argv):
         cfg = load_config()
         day = dt.datetime.now(tz(cfg)).date() - dt.timedelta(days=1)
         if "--date" in argv:
-            day = dt.date.fromisoformat(argv[argv.index("--date") + 1])
+            try:
+                day = dt.date.fromisoformat(argv[argv.index("--date") + 1])
+            except (IndexError, ValueError):
+                print("usage: ringkas.py run --date YYYY-MM-DD [--dry-run]")
+                return 2
         try:
             out = summarize_day(day, cfg, dry_run="--dry-run" in argv)
         except (NoKeyError, SummarizerError) as e:

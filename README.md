@@ -94,6 +94,12 @@ Then give it a free Gemini key (create one at <https://aistudio.google.com/apike
 export GEMINI_API_KEY="your-key"
 ```
 
+Optional but recommended: let Claude read the notes without asking each time. Add this to `~/.claude/settings.json`:
+
+```json
+{ "permissions": { "allow": ["Read(~/.claude/ringkas/**)"] } }
+```
+
 That's it. The next session start summarizes the days you already have. Check with:
 
 ```bash
