@@ -237,5 +237,120 @@ class TestSummarize(unittest.TestCase):
                 ringkas.summarize("p", cfg, env={}, post=FakePost([(500, None)]))
 
 
+def make_day(h, text="fix the build", ts="2026-11-06T02:00:00Z", project="-home-ana-blog"):
+    write_jsonl(h / ".claude" / "projects" / project / "s.jsonl", [urow(text, ts), arow("done, tests pass", ts)])
+
+
+def wita_cfg(**k):
+    return dict(ringkas.load_config(env={}), timezone="Asia/Makassar", **k)
+
+
+class FakeSummarizer:
+    def __init__(self, answer="# x\n## Done\n- [blog] fixed the build"):
+        self.answer, self.prompts = answer, []
+
+    def __call__(self, prompt, cfg):
+        self.prompts.append(prompt)
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+
+class TestDaily(unittest.TestCase):
+    def test_writes_note(self):
+        with TempHome() as h:
+            make_day(h)
+            write_jsonl(h / ".claude" / "projects" / "-home-ana-blog" / "t.jsonl",
+                        [urow("my salary is low", "2026-11-06T03:00:00Z")])
+            fake = FakeSummarizer("```markdown\n# whatever\n## Done\n- [blog] fixed the build\n```")
+            path = ringkas.summarize_day(date(2026, 11, 6), wita_cfg(), summarizer=fake)
+            self.assertEqual(path, ringkas.data_dir() / "daily" / "2026-11-06.md")
+            self.assertEqual(path.read_text(), "# 2026-11-06 (Friday)\n## Done\n- [blog] fixed the build\n")
+            self.assertIn("<conversation>", fake.prompts[0])
+            self.assertIn("] [blog] user: fix the build", fake.prompts[0])
+            self.assertNotIn("salary", fake.prompts[0])
+
+    def test_dry_run_empty_and_bad_answer(self):
+        with TempHome() as h:
+            make_day(h)
+            fake = FakeSummarizer()
+            material = ringkas.summarize_day(date(2026, 11, 6), wita_cfg(), summarizer=fake, dry_run=True)
+            self.assertIn("fix the build", material)
+            self.assertEqual(fake.prompts, [])
+            self.assertIsNone(ringkas.summarize_day(date(2026, 11, 1), wita_cfg(), summarizer=fake))
+            with self.assertRaises(ringkas.SummarizerError):
+                ringkas.summarize_day(date(2026, 11, 6), wita_cfg(), summarizer=FakeSummarizer("sorry"))
+            self.assertFalse((ringkas.data_dir() / "daily" / "2026-11-06.md").exists())
+
+
+class TestDue(unittest.TestCase):
+    def test_due_days(self):
+        w = lambda *a: datetime(*a, tzinfo=WITA)
+        due = lambda now, done=(), attempts=None, window=29: ringkas.due_days(now, set(done), attempts or {}, window)
+        self.assertNotIn(date(2026, 11, 6), due(w(2026, 11, 7, 0, 29))[0])
+        self.assertIn(date(2026, 11, 6), due(w(2026, 11, 7, 0, 30))[0])
+        self.assertEqual(len(due(w(2026, 11, 7, 9))[0]), 29)
+        t = w(2026, 11, 7, 9).timestamp()
+        self.assertNotIn(date(2026, 11, 6), due(w(2026, 11, 7, 9), attempts={"2026-11-06": {"time": t - 5400, "n": 2}})[0])
+        self.assertIn(date(2026, 11, 6), due(w(2026, 11, 7, 9), attempts={"2026-11-06": {"time": t - 5400, "n": 1}})[0])
+        missing = due(w(2026, 11, 7, 9), done=[date(2026, 10, 1)], window=2)[1]
+        self.assertEqual((missing[0], missing[-1]), (date(2026, 10, 8), date(2026, 11, 4)))
+        self.assertEqual(due(w(2026, 11, 7, 9), window=2)[1], [date(2026, 11, 4)])
+
+
+class TestRunPending(unittest.TestCase):
+    def test_no_key(self):
+        with TempHome() as h:
+            make_day(h)
+            os.environ.pop("GEMINI_API_KEY", None)
+            ringkas.run_pending(datetime(2026, 11, 7, 9, tzinfo=WITA), weekly=False)
+            self.assertIn("no API key", (ringkas.state_dir() / "last-result").read_text())
+            self.assertFalse((ringkas.state_dir() / "attempts.json").exists())
+
+    def test_lock_and_no_transcripts(self):
+        with TempHome() as h:
+            (h / ".claude").mkdir()
+            (h / ".claude" / "settings.json").write_text('{"cleanupPeriodDays": 3}')
+            ringkas.data_dir().mkdir(parents=True)
+            (ringkas.data_dir() / "config.json").write_text('{"timezone": "Asia/Makassar"}')
+            fake = FakeSummarizer()
+            ringkas.state_dir().mkdir(parents=True)
+            (ringkas.state_dir() / "lock").write_text("1")
+            ringkas.run_pending(datetime(2026, 11, 7, 9, tzinfo=WITA), summarizer=fake, weekly=False)
+            self.assertEqual(fake.prompts, [])
+            (ringkas.state_dir() / "lock").unlink()
+            make_day(h)  # transcript written now: counts as present for every recent day
+            os.utime(next((h / ".claude" / "projects").rglob("*.jsonl")), (0, 0))  # pretend it is old
+            ringkas.run_pending(datetime(2026, 11, 7, 9, tzinfo=WITA), summarizer=fake, weekly=False)
+            missing = (ringkas.state_dir() / "missing").read_text()
+            self.assertIn("2026-11-06\tno transcripts", missing)
+            self.assertFalse((ringkas.state_dir() / "lock").exists())
+
+    def test_failure_then_success(self):
+        with TempHome() as h:
+            (h / ".claude").mkdir()
+            (h / ".claude" / "settings.json").write_text('{"cleanupPeriodDays": 2}')
+            ringkas.data_dir().mkdir(parents=True)
+            (ringkas.data_dir() / "config.json").write_text('{"timezone": "Asia/Makassar"}')
+            make_day(h)
+            now = datetime(2026, 11, 7, 9, tzinfo=WITA)
+            ringkas.run_pending(now, summarizer=FakeSummarizer(ringkas.SummarizerError("429")), weekly=False)
+            attempts = json.loads((ringkas.state_dir() / "attempts.json").read_text())
+            self.assertEqual(attempts["2026-11-06"]["n"], 1)
+            ringkas.run_pending(now.replace(hour=10, minute=1), summarizer=FakeSummarizer(), weekly=False)
+            self.assertTrue((ringkas.data_dir() / "daily" / "2026-11-06.md").exists())
+            self.assertIn("2026-11-06", (ringkas.state_dir() / "done").read_text())
+            self.assertNotIn("2026-11-06", json.loads((ringkas.state_dir() / "attempts.json").read_text()))
+
+
+class TestCli(unittest.TestCase):
+    def test_status(self):
+        with TempHome():
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(ringkas.main(["status"]), 0)
+            self.assertIn("Last summarized", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
