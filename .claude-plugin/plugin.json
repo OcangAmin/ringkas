@@ -1,6 +1,6 @@
 {
   "name": "ringkas",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Daily & weekly notes of your Claude Code sessions, summarized by free Gemini (or local Ollama). Zero Claude tokens, privacy filters built in.",
   "author": {
     "name": "OcangAmin"
@@ -15,5 +15,37 @@
     "gemini",
     "ollama",
     "productivity"
-  ]
+  ],
+  "userConfig": {
+    "gemini_api_key": {
+      "type": "string",
+      "title": "Gemini API key",
+      "description": "Free key from https://aistudio.google.com/apikey. Stored in your system's secure credential store. Leave empty if you use GEMINI_API_KEY or a local model (config.json).",
+      "sensitive": true
+    },
+    "day_ends_at": {
+      "type": "string",
+      "title": "Day ends at (HH:MM)",
+      "description": "When your day ends. 23:30 = late-night work goes to the next day's note. A morning time like 02:00 ends the day the next morning (night owls). 00:00 = plain calendar day.",
+      "default": "23:30"
+    },
+    "timezone": {
+      "type": "string",
+      "title": "Time zone",
+      "description": "auto = follow the system (DST included), or a name like Asia/Jakarta, Europe/Berlin, America/New_York.",
+      "default": "auto"
+    },
+    "weekly_day": {
+      "type": "string",
+      "title": "Weekly rollup day",
+      "description": "Day the past week's notes are merged into one weekly note: monday … sunday.",
+      "default": "monday"
+    },
+    "language": {
+      "type": "string",
+      "title": "Summary language",
+      "description": "auto = the language you used most in the conversation, or a language such as en, id, es.",
+      "default": "auto"
+    }
+  }
 }

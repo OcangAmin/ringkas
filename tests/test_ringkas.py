@@ -647,5 +647,37 @@ class TestDayEnd(unittest.TestCase):
             self.assertTrue(any("day_ends_at" in w for w in cfg["_warnings"]))
 
 
+class TestPluginOptions(unittest.TestCase):
+    def test_options_override_and_persist(self):
+        with TempHome():
+            ringkas.data_dir().mkdir(parents=True)
+            (ringkas.data_dir() / "config.json").write_text('{"day_ends_at": "22:00", "weekly_day": "friday"}')
+            env = {"CLAUDE_PLUGIN_OPTION_DAY_ENDS_AT": "02:00", "CLAUDE_PLUGIN_OPTION_TIMEZONE": "Asia/Jakarta",
+                   "CLAUDE_PLUGIN_OPTION_WEEKLY_DAY": "", "CLAUDE_PLUGIN_OPTION_GEMINI_API_KEY": "secret-k"}
+            cfg = ringkas.load_config(env=env)
+            self.assertEqual((cfg["day_ends_at"], cfg["timezone"], cfg["weekly_day"]), ("02:00", "Asia/Jakarta", "friday"))
+            saved = (ringkas.state_dir() / "plugin-options.json").read_text()
+            self.assertIn("02:00", saved)
+            self.assertNotIn("secret-k", saved)  # the API key is never written by ringkas
+            manual = ringkas.load_config(env={})  # e.g. `ringkas.py status` typed by the user
+            self.assertEqual(manual["day_ends_at"], "02:00")
+            self.assertEqual(ringkas.load_config(env={"RINGKAS_DAY_ENDS_AT": "21:00"})["day_ends_at"], "21:00")
+
+    def test_key_from_plugin_option(self):
+        with TempHome():
+            post = FakePost([gemini_ok("ok")])
+            ringkas.summarize("p", ringkas.load_config(env={}), env={"CLAUDE_PLUGIN_OPTION_GEMINI_API_KEY": "k2"},
+                              post=post, now=lambda: 1)
+            self.assertEqual(post.calls[0][1]["x-goog-api-key"], "k2")
+
+    def test_manifest_user_config(self):
+        cfg = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())["userConfig"]
+        self.assertEqual(set(cfg), {"gemini_api_key", "day_ends_at", "timezone", "weekly_day", "language"})
+        self.assertTrue(cfg["gemini_api_key"]["sensitive"])
+        self.assertEqual(cfg["day_ends_at"]["default"], "23:30")
+        for opt in cfg.values():
+            self.assertTrue({"type", "title", "description"} <= set(opt))
+
+
 if __name__ == "__main__":
     unittest.main()

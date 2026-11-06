@@ -56,8 +56,32 @@ def state_dir():
     return data_dir() / "state"
 
 
+PLUGIN_OPTIONS = ("day_ends_at", "timezone", "weekly_day", "language")  # non-secret keys of plugin.json userConfig
+
+
+def _plugin_options(env):
+    """Values from the plugin's install/`/config` dialog. Claude Code exports them only to hook processes, so they
+    are saved (secrets excluded) for commands the user runs by hand."""
+    found = {k: env[f"CLAUDE_PLUGIN_OPTION_{k.upper()}"] for k in PLUGIN_OPTIONS
+             if str(env.get(f"CLAUDE_PLUGIN_OPTION_{k.upper()}", "")).strip()}
+    saved = state_dir() / "plugin-options.json"
+    if found:
+        try:
+            if json.loads(saved.read_text()) == found:
+                return found
+        except (OSError, ValueError):
+            pass
+        _write_json(saved, found)
+        return found
+    try:
+        value = json.loads(saved.read_text())
+        return {k: v for k, v in value.items() if k in PLUGIN_OPTIONS} if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def load_config(env=os.environ):
-    """DEFAULTS, then ~/.claude/ringkas/config.json, then RINGKAS_<KEY> environment variables."""
+    """DEFAULTS, then ~/.claude/ringkas/config.json, then the plugin's /config options, then RINGKAS_<KEY>."""
     cfg = dict(DEFAULTS)
     try:
         user = json.loads((data_dir() / "config.json").read_text())
@@ -65,6 +89,7 @@ def load_config(env=os.environ):
             cfg.update({k: v for k, v in user.items() if k in DEFAULTS})
     except (OSError, ValueError):
         pass
+    cfg.update(_plugin_options(env))
     for key, default in DEFAULTS.items():
         raw = env.get(f"RINGKAS_{key.upper()}")
         if raw is None:
@@ -408,9 +433,10 @@ def summarize(prompt, cfg, *, env=os.environ, post=http_post, now=time.time):
             raise SummarizerError(f"openai-compatible endpoint: HTTP {status}")
         return text
 
-    key = env.get("GEMINI_API_KEY")
+    key = env.get("CLAUDE_PLUGIN_OPTION_GEMINI_API_KEY") or env.get("GEMINI_API_KEY")
     if not key:
-        raise NoKeyError("set GEMINI_API_KEY (free key: https://aistudio.google.com/apikey)")
+        raise NoKeyError("add a Gemini key in /config (ringkas) or set GEMINI_API_KEY "
+                         "(free key: https://aistudio.google.com/apikey)")
     skip_file = state_dir() / "models.json"
     try:
         skip = json.loads(skip_file.read_text())

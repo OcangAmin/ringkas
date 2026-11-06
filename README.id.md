@@ -90,11 +90,23 @@ claude plugin marketplace add OcangAmin/ringkas
 claude plugin install ringkas@ringkas
 ```
 
-Lalu beri kunci Gemini gratis (buat di <https://aistudio.google.com/apikey>) di lingkungan tempat Claude Code dijalankan, mis. di `~/.bashrc` atau `~/.zshrc`:
+Lalu atur. Claude Code menanyakan pengaturan ini saat plugin diaktifkan dari `/plugin`, dan mengingatkan setelah pemasangan lewat terminal. Semua punya nilai bawaan yang masuk akal:
 
-```bash
-export GEMINI_API_KEY="kunci-anda"
-```
+| Pengaturan | Bawaan | |
+|---|---|---|
+| **Kunci API Gemini** | — | gratis di <https://aistudio.google.com/apikey>; disamarkan dan disimpan di penyimpanan kredensial sistem |
+| **Hari berakhir pukul** | `23:30` | `02:00` kalau Anda kerja lewat tengah malam, `00:00` untuk hari kalender biasa |
+| **Zona waktu** | `auto` | mis. `Asia/Jakarta` |
+| **Hari rangkuman mingguan** | `monday` | |
+| **Bahasa ringkasan** | `auto` | mengikuti percakapan, atau `en`, `id`, … |
+
+**Atur atau ubah kapan saja:**
+
+- di dalam Claude Code: `/plugin configure ringkas@ringkas` (atau baris *ringkas* di `/config`)
+- dari terminal: `claude plugin configure ringkas@ringkas`
+- langsung saat memasang: `claude plugin install ringkas@ringkas --config day_ends_at=02:00 --config timezone=Asia/Jakarta`
+
+Mulai ulang Claude Code setelah mengubah. Lebih suka variabel lingkungan? `export GEMINI_API_KEY="kunci-anda"` juga bisa.
 
 Opsional tapi disarankan: izinkan Claude membaca catatan tanpa bertanya setiap kali. Tambahkan ini ke `~/.claude/settings.json`:
 
@@ -132,7 +144,7 @@ Model lokal kecil punya jendela konteks kecil (bawaan Ollama hanya beberapa ribu
 
 ## Pengaturan
 
-`~/.claude/ringkas/config.json` (opsional); setiap kunci juga bisa diisi lewat `RINGKAS_<KUNCI>` (mis. `RINGKAS_LANGUAGE=id`). Kalau Anda memakai `CLAUDE_CONFIG_DIR`, semuanya disimpan di sana, bukan di `~/.claude`.
+Lima pengaturan di atas disimpan di Claude Code (`/config`). Sisanya di `~/.claude/ringkas/config.json` (opsional); setiap kunci juga bisa diisi lewat `RINGKAS_<KUNCI>` (mis. `RINGKAS_LANGUAGE=id`). Urutan prioritas: `RINGKAS_<KUNCI>` > `/config` > `config.json` > bawaan. Kalau Anda memakai `CLAUDE_CONFIG_DIR`, semuanya disimpan di sana, bukan di `~/.claude`.
 
 | Kunci | Bawaan | Arti |
 |---|---|---|

@@ -90,11 +90,23 @@ claude plugin marketplace add OcangAmin/ringkas
 claude plugin install ringkas@ringkas
 ```
 
-Then give it a free Gemini key (create one at <https://aistudio.google.com/apikey>) in the environment Claude Code starts from, e.g. in `~/.bashrc` or `~/.zshrc`:
+Then set it up. Claude Code asks for these settings when you enable the plugin from `/plugin`, and reminds you after a shell install. Everything has a sensible default:
 
-```bash
-export GEMINI_API_KEY="your-key"
-```
+| Setting | Default | |
+|---|---|---|
+| **Gemini API key** | — | free at <https://aistudio.google.com/apikey>; hidden and kept in your system's credential store |
+| **Day ends at** | `23:30` | `02:00` if you work past midnight, `00:00` for calendar days |
+| **Time zone** | `auto` | e.g. `Asia/Jakarta` |
+| **Weekly rollup day** | `monday` | |
+| **Summary language** | `auto` | follows your conversation, or `en`, `id`, … |
+
+**Set or change them any time:**
+
+- inside Claude Code: `/plugin configure ringkas@ringkas` (or the *ringkas* rows in `/config`)
+- from your shell: `claude plugin configure ringkas@ringkas`
+- right at install: `claude plugin install ringkas@ringkas --config day_ends_at=02:00 --config timezone=Asia/Jakarta`
+
+Restart Claude Code after a change. Prefer environment variables? `export GEMINI_API_KEY="your-key"` works too.
 
 Optional but recommended: let Claude read the notes without asking each time. Add this to `~/.claude/settings.json`:
 
@@ -132,7 +144,7 @@ Small local models have small context windows (Ollama defaults to a few thousand
 
 ## Configuration
 
-Optional `~/.claude/ringkas/config.json`; every key can also be set as `RINGKAS_<KEY>` (e.g. `RINGKAS_LANGUAGE=en`). If you use `CLAUDE_CONFIG_DIR`, everything lives there instead of `~/.claude`.
+The five settings above live in Claude Code (`/config`). Everything else goes in the optional `~/.claude/ringkas/config.json`; every key can also be set as `RINGKAS_<KEY>` (e.g. `RINGKAS_LANGUAGE=en`). Order of precedence: `RINGKAS_<KEY>` > `/config` > `config.json` > default. If you use `CLAUDE_CONFIG_DIR`, everything lives there instead of `~/.claude`.
 
 | Key | Default | Meaning |
 |---|---|---|
