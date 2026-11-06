@@ -296,8 +296,8 @@ class TestDue(unittest.TestCase):
     def test_due_days(self):
         w = lambda *a: datetime(*a, tzinfo=WITA)
         due = lambda now, done=(), attempts=None, window=29: ringkas.due_days(now, set(done), attempts or {}, window)
-        self.assertNotIn(date(2026, 11, 6), due(w(2026, 11, 7, 0, 29))[0])
-        self.assertIn(date(2026, 11, 6), due(w(2026, 11, 7, 0, 30))[0])
+        self.assertNotIn(date(2026, 11, 6), due(w(2026, 11, 6, 23, 59))[0])  # day ends at midnight by default
+        self.assertIn(date(2026, 11, 6), due(w(2026, 11, 7, 0, 0))[0])
         self.assertEqual(len(due(w(2026, 11, 7, 9))[0]), 29)
         t = w(2026, 11, 7, 9).timestamp()
         self.assertNotIn(date(2026, 11, 6), due(w(2026, 11, 7, 9), attempts={"2026-11-06": {"time": t - 5400, "n": 2}})[0])
@@ -613,6 +613,38 @@ class TestV011(unittest.TestCase):
         self.assertIn("Read(~/.claude/ringkas/**)", skill)
         self.assertIn("Read(~/.claude/ringkas/**)", (ROOT / "README.md").read_text())
         self.assertIn("Read(~/.claude/ringkas/**)", (ROOT / "README.id.md").read_text())
+
+
+class TestDayEnd(unittest.TestCase):
+    def test_parse_and_range(self):
+        self.assertEqual(ringkas.day_end_time({"day_ends_at": "23:30"}), (23, 30))
+        start, end = ringkas.day_range(date(2026, 11, 6), WITA, "23:30")
+        self.assertEqual((start, end), (datetime(2026, 11, 5, 23, 30, tzinfo=WITA), datetime(2026, 11, 6, 23, 30, tzinfo=WITA)))
+        start, end = ringkas.day_range(date(2026, 11, 6), WITA, "02:00")  # night owl: ends next morning
+        self.assertEqual((start, end), (datetime(2026, 11, 6, 2, 0, tzinfo=WITA), datetime(2026, 11, 7, 2, 0, tzinfo=WITA)))
+        start, end = ringkas.day_range(date(2026, 11, 6), WITA, "00:00")
+        self.assertEqual((start, end), (datetime(2026, 11, 6, 0, 0, tzinfo=WITA), datetime(2026, 11, 7, 0, 0, tzinfo=WITA)))
+
+    def test_collect_and_due_with_2330(self):
+        with TempHome() as h:
+            proj = h / ".claude" / "projects"
+            write_jsonl(proj / "-p-blog" / "s.jsonl", [urow("old day", "2026-11-05T15:29:00Z"),   # 23:29 WITA 5th
+                                                       urow("new day", "2026-11-05T15:30:00Z"),   # 23:30 WITA 5th
+                                                       urow("late", "2026-11-06T15:29:59Z"),
+                                                       urow("next", "2026-11-06T15:30:00Z")])
+            got = [m.text for m in ringkas.collect(date(2026, 11, 6), WITA, proj, [], day_end="23:30")]
+            self.assertEqual(got, ["new day", "late"])
+        w = lambda *a: datetime(*a, tzinfo=WITA)
+        self.assertNotIn(date(2026, 11, 6), ringkas.due_days(w(2026, 11, 6, 23, 29), set(), {}, 29, day_end="23:30")[0])
+        self.assertIn(date(2026, 11, 6), ringkas.due_days(w(2026, 11, 6, 23, 30), set(), {}, 29, day_end="23:30")[0])
+        self.assertNotIn(date(2026, 11, 6), ringkas.due_days(w(2026, 11, 7, 1, 59), set(), {}, 29, day_end="02:00")[0])
+
+    def test_default_and_validation(self):
+        with TempHome():
+            self.assertEqual(ringkas.load_config(env={})["day_ends_at"], "23:30")
+            cfg = ringkas.load_config(env={"RINGKAS_DAY_ENDS_AT": "25:99"})
+            self.assertEqual(cfg["day_ends_at"], "23:30")
+            self.assertTrue(any("day_ends_at" in w for w in cfg["_warnings"]))
 
 
 if __name__ == "__main__":

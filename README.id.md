@@ -11,6 +11,7 @@
 - **Nol token Claude untuk meringkas.** Kuota Claude Anda untuk bekerja, bukan untuk mencatat.
 - **Tidak ada yang disuntikkan ke sesi.** Catatan hanya dibaca saat Anda bertanya. Biaya per sesi: deskripsi satu baris skill (±60 token).
 - **Tanpa daemon, tanpa cron.** Satu hook SessionStart yang langsung selesai dan mengejar hari yang terlewat di latar.
+- **Batas hari Anda sendiri.** Bawaannya hari berakhir pukul 23:30, jadi kerja larut malam masuk ke catatan hari berikutnya, tidak terbelah dua. Suka begadang? Atur ke `02:00`.
 - **Privasi didahulukan.** Hanya teks percakapan yang diringkas (bukan keluaran alat, bukan berkas yang dibaca alat); pesan soal uang, kesehatan, atau kredensial dilewati; kunci API dan token disamarkan.
 
 ## Masalahnya
@@ -53,7 +54,8 @@ Setiap minggu (bawaan Senin) catatan harian tiap minggu yang sudah lewat digabun
  1. hook: ringkas.py wake  ──► langsung selesai, tanpa keluaran
           │ (latar)
           ▼
- 2. cari hari yang belum diringkas (dalam masa simpan transkrip Anda)
+ 2. cari hari yang sudah berakhir (bawaan 23:30) dan belum diringkas,
+    dalam masa simpan transkrip Anda
           │
           ▼
  3. per hari: ambil teks percakapan semua proyek → lewati topik sensitif
@@ -138,7 +140,8 @@ Model lokal kecil punya jendela konteks kecil (bawaan Ollama hanya beberapa ribu
 | `models` | `["gemini-flash-latest", "gemini-flash-lite-latest"]` | model Gemini yang dicoba berurutan; model yang kena batas dilewati sementara |
 | `openai_base_url` / `openai_model` | — | endpoint dan model untuk `"openai"` |
 | `language` | `"auto"` | bahasa ringkasan; `auto` mengikuti percakapan |
-| `timezone` | `"auto"` | kapan hari Anda mulai dan berakhir, mis. `"Asia/Jakarta"` |
+| `timezone` | `"auto"` | zona waktu Anda, mis. `"Asia/Jakarta"` (`auto` mengikuti sistem, termasuk jam musim panas) |
+| `day_ends_at` | `"23:30"` | kapan hari berakhir: jam malam berarti berakhir malam itu (pesan setelahnya masuk hari berikutnya), jam pagi seperti `"02:00"` berarti berakhir pagi berikutnya, `"00:00"` berarti hari kalender biasa |
 | `weekly_day` | `"monday"` | hari rangkuman mingguan |
 | `ignore_projects` | `[]` | pola glob folder proyek yang dilewati |
 | `max_chars_per_day` | `40000` | batas teks yang dikirim per hari |

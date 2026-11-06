@@ -30,6 +30,7 @@ DEFAULTS = {
     "openai_model": "",
     "language": "auto",
     "timezone": "auto",
+    "day_ends_at": "23:30",
     "weekly_day": "monday",
     "ignore_projects": [],
     "max_chars_per_day": 40000,
@@ -93,6 +94,7 @@ def _validate(cfg):
         "weekly_day": lambda v: str(v).lower() in WEEKDAYS,
         "max_chars_per_day": lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0,
         "timezone": lambda v: v in ("", "auto") or _zone(v) is not None,
+        "day_ends_at": lambda v: day_end_time(v) is not None,
     }
     for key, ok in checks.items():
         if not ok(cfg[key]):
@@ -179,10 +181,26 @@ def project_label(folder_name):
     return parts[-1] if parts else folder_name
 
 
-def collect(day, tzinfo, projects_dir, ignore):
-    """All conversation messages of `day` (local time) across projects, oldest first."""
-    start = dt.datetime.combine(day, dt.time(), tzinfo)
-    end = start + dt.timedelta(days=1)
+def day_end_time(value):
+    """(hour, minute) from "HH:MM" (or a config dict holding day_ends_at); None when invalid."""
+    if isinstance(value, dict):
+        value = value.get("day_ends_at", DEFAULTS["day_ends_at"])
+    m = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", str(value).strip())
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
+def day_range(day, tzinfo, day_end="00:00"):
+    """Start and end of `day`. A day ends at day_end: "23:30" ends that evening (late work rolls into the next day),
+    a morning time such as "02:00" ends the next morning (for night owls), "00:00" is a plain calendar day."""
+    hour, minute = day_end_time(day_end) or (0, 0)
+    end_date = day if hour >= 12 else day + dt.timedelta(days=1)
+    end = dt.datetime.combine(end_date, dt.time(hour, minute), tzinfo)
+    return end - dt.timedelta(days=1), end
+
+
+def collect(day, tzinfo, projects_dir, ignore, day_end="00:00"):
+    """All conversation messages of `day` across projects, oldest first."""
+    start, end = day_range(day, tzinfo, day_end)
     found = set()
     for folder in sorted(Path(projects_dir).glob("*")):
         if not folder.is_dir():
@@ -483,7 +501,7 @@ def projects_dir():
 def summarize_day(day, cfg, *, summarizer=summarize, dry_run=False):
     """None when there was no conversation; the material when dry_run; otherwise the written note's path."""
     tzinfo = tz(cfg)
-    msgs = collect(day, tzinfo, projects_dir(), cfg.get("ignore_projects") or [])
+    msgs = collect(day, tzinfo, projects_dir(), cfg.get("ignore_projects") or [], day_end=cfg.get("day_ends_at", "00:00"))
     if not msgs:
         return None
     msgs, skipped = filter_sensitive(msgs, load_words(data_dir() / "sensitive-words.txt"))
@@ -510,13 +528,13 @@ def _attempt(value):
     return (value, 1) if isinstance(value, (int, float)) else (value["time"], value["n"])
 
 
-def due_days(now, done, attempts, window):
-    """(days to summarize, days whose transcripts are already gone)."""
+def due_days(now, done, attempts, window, day_end="00:00"):
+    """(days to summarize, days whose transcripts are already gone). A day is due once it has ended."""
     today = now.date()
     due = []
-    for i in range(window, 0, -1):
+    for i in range(window, -1, -1):
         day = today - dt.timedelta(days=i)
-        if day in done or (i == 1 and now.time() < dt.time(0, 30)):
+        if day in done or now < day_range(day, now.tzinfo, day_end)[1]:
             continue
         if day.isoformat() in attempts:
             when, n = _attempt(attempts[day.isoformat()])
@@ -552,8 +570,8 @@ def acquire_lock(path):
     return False
 
 
-def _has_transcripts(day, tzinfo):
-    start = dt.datetime.combine(day, dt.time(), tzinfo).timestamp()
+def _has_transcripts(day, tzinfo, day_end="00:00"):
+    start = day_range(day, tzinfo, day_end)[0].timestamp()
     return any(f.stat().st_mtime >= start for f in projects_dir().glob("*/*.jsonl"))
 
 
@@ -591,7 +609,7 @@ def run_pending(now=None, *, summarizer=summarize, weekly=True):
             attempts = {}
         failed_before = set(attempts)
         window = retention_days()
-        due, gone = due_days(now, done, attempts, window)
+        due, gone = due_days(now, done, attempts, window, day_end=cfg["day_ends_at"])
 
         def result(day, text):
             log(f"{day} {text}")
@@ -618,7 +636,7 @@ def run_pending(now=None, *, summarizer=summarize, weekly=True):
                 result(day, f"failed (attempt {n + 1}): {e}")
                 break  # the summarizer is down: leave the other days for a later session
             attempts.pop(day.isoformat(), None)
-            if out is None and not _has_transcripts(day, tzinfo):
+            if out is None and not _has_transcripts(day, tzinfo, cfg["day_ends_at"]):
                 missing(day, "no transcripts")
                 continue
             _append(done_file, day.isoformat())

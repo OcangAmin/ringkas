@@ -1,6 +1,6 @@
 {
   "name": "ringkas",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Daily & weekly notes of your Claude Code sessions, summarized by free Gemini (or local Ollama). Zero Claude tokens, privacy filters built in.",
   "author": {
     "name": "OcangAmin"

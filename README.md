@@ -11,6 +11,7 @@
 - **Zero Claude tokens for summarizing.** Your Claude quota is for work, not for bookkeeping.
 - **Nothing injected into your sessions.** Notes are read only when you ask. Cost per session: the skill's one-line description (~60 tokens).
 - **No daemon, no cron.** One SessionStart hook that returns instantly and catches up on any missed days in the background.
+- **Your day, your cut-off.** A day ends at 23:30 by default, so late-night work rolls into the next day's note instead of being cut in half. Night owl? Set it to `02:00`.
 - **Privacy first.** Only conversation text is summarized (no tool output, no files read by tools); messages about money, health or credentials are skipped; API keys and tokens are redacted.
 
 ## The problem
@@ -53,7 +54,8 @@ Every week (Monday by default) each finished week's daily notes are merged into 
  1. hook: ringkas.py wake  ──► returns instantly, prints nothing
           │ (background)
           ▼
- 2. finds days not yet summarized (within your transcript retention window)
+ 2. finds days that have ended (23:30 by default) and are not summarized yet,
+    within your transcript retention window
           │
           ▼
  3. per day: collect conversation text of all projects → skip sensitive topics
@@ -138,7 +140,8 @@ Optional `~/.claude/ringkas/config.json`; every key can also be set as `RINGKAS_
 | `models` | `["gemini-flash-latest", "gemini-flash-lite-latest"]` | Gemini models tried in order; rate-limited models are skipped for a while |
 | `openai_base_url` / `openai_model` | — | endpoint and model for `"openai"` |
 | `language` | `"auto"` | summary language; `auto` follows the conversation |
-| `timezone` | `"auto"` | where your day starts and ends, e.g. `"Asia/Jakarta"` |
+| `timezone` | `"auto"` | your time zone, e.g. `"Asia/Jakarta"` (`auto` follows the system, including DST) |
+| `day_ends_at` | `"23:30"` | when a day ends: an evening time ends that evening (later messages go to the next day), a morning time such as `"02:00"` ends the next morning, `"00:00"` is a plain calendar day |
 | `weekly_day` | `"monday"` | day the weekly rollup runs |
 | `ignore_projects` | `[]` | glob patterns for project folders to skip |
 | `max_chars_per_day` | `40000` | cap on text sent per day |
