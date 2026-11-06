@@ -1,0 +1,16 @@
+{
+  "name": "ringkas",
+  "owner": {
+    "name": "OcangAmin"
+  },
+  "metadata": {
+    "description": "ringkas: daily & weekly notes of your Claude Code sessions, summarized for free."
+  },
+  "plugins": [
+    {
+      "name": "ringkas",
+      "source": "./",
+      "description": "Daily & weekly notes of your Claude Code sessions, summarized by free Gemini (or local Ollama). Zero Claude tokens, privacy filters built in."
+    }
+  ]
+}

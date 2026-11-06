@@ -14,6 +14,8 @@ import fnmatch
 import json
 import os
 import re
+import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -642,6 +644,19 @@ def run_weekly(today, cfg, *, summarizer=summarize):
     return out
 
 
+# ---------------------------------------------------------------- hook
+
+def wake(spawn=subprocess.Popen):
+    """SessionStart hook: start run-pending detached and return at once. Prints nothing (hook output would land in
+    Claude's context) and never fails the session."""
+    try:
+        spawn([sys.executable, os.path.abspath(__file__), "run-pending"], stdin=subprocess.DEVNULL,
+              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, cwd=str(home()))
+    except Exception:
+        pass
+    return 0
+
+
 # ---------------------------------------------------------------- CLI
 
 def status():
@@ -687,5 +702,4 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    import sys
     sys.exit(main(sys.argv[1:]))

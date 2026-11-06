@@ -406,5 +406,51 @@ class TestWeekly(unittest.TestCase):
         self.assertEqual(fake.prompts, [])
 
 
+ROOT = Path(__file__).resolve().parent.parent
+
+
+class TestWake(unittest.TestCase):
+    def test_silent_detached_spawn(self):
+        calls = []
+
+        def spawn(args, **kw):
+            calls.append((args, kw))
+
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(ringkas.wake(spawn=spawn), 0)
+        self.assertEqual((out.getvalue(), err.getvalue()), ("", ""))
+        args, kw = calls[0]
+        self.assertEqual(args[-1], "run-pending")
+        self.assertTrue(kw["start_new_session"])
+
+    def test_errors_swallowed_and_fast(self):
+        def boom(args, **kw):
+            raise OSError("no python")
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            self.assertEqual(ringkas.wake(spawn=boom), 0)
+        self.assertEqual(out.getvalue(), "")
+        start = time.time()
+        with TempHome():
+            ringkas.wake(spawn=lambda a, **k: None)
+        self.assertLess(time.time() - start, 1)
+
+
+class TestManifests(unittest.TestCase):
+    def test_files(self):
+        plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
+        market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
+        hooks = (ROOT / "hooks" / "hooks.json").read_text()
+        json.loads(hooks)
+        self.assertEqual(plugin["name"], "ringkas")
+        self.assertEqual(market["plugins"][0]["name"], "ringkas")
+        self.assertIn("wake", hooks)
+        self.assertIn("|| true", hooks)
+        skill = (ROOT / "skills" / "ringkas" / "SKILL.md").read_text()
+        self.assertTrue(skill.startswith("---\nname: ringkas\n"))
+
+
 if __name__ == "__main__":
     unittest.main()

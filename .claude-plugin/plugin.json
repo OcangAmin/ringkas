@@ -1,0 +1,10 @@
+{
+  "name": "ringkas",
+  "version": "0.1.0",
+  "description": "Daily & weekly notes of your Claude Code sessions, summarized by free Gemini (or local Ollama). Zero Claude tokens, privacy filters built in.",
+  "author": { "name": "OcangAmin" },
+  "homepage": "https://github.com/OcangAmin/ringkas",
+  "repository": "https://github.com/OcangAmin/ringkas",
+  "license": "MIT",
+  "keywords": ["claude-code", "claude-code-plugin", "memory", "gemini", "ollama", "productivity"]
+}
