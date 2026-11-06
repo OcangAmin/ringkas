@@ -10,9 +10,12 @@ Commands:
                                              the background and exits silently
 """
 import datetime as dt
+import fnmatch
 import json
 import os
+import re
 from pathlib import Path
+from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 DEFAULTS = {
@@ -79,3 +82,189 @@ def retention_days(settings_path=None):
     except (OSError, ValueError, KeyError, TypeError):
         pass
     return max(1, days - 1)
+
+
+# ---------------------------------------------------------------- transcripts
+
+MAX_PER_MESSAGE = 800
+MARKER = "(sensitive topic, skipped)"
+
+
+class Msg(NamedTuple):
+    time: dt.datetime
+    project: str
+    role: str  # "user" | "assistant"
+    text: str
+
+
+def _blocks_text(content):
+    if isinstance(content, list):
+        content = "\n".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
+    return content.strip() if isinstance(content, str) else ""
+
+
+def user_text(d):
+    """Text the user actually typed, or None (tool results, local commands, reminders, interruptions)."""
+    if d.get("type") != "user" or d.get("isMeta") or d.get("isSidechain"):
+        return None
+    text = _blocks_text((d.get("message") or {}).get("content"))
+    if not text or text.startswith(("<", "[Request interrupted")) or "[SYSTEM NOTIFICATION" in text:
+        return None
+    return text
+
+
+def assistant_text(d):
+    """Assistant reply text without tool calls, or None."""
+    if d.get("type") != "assistant" or d.get("isSidechain"):
+        return None
+    return _blocks_text((d.get("message") or {}).get("content")) or None
+
+
+def project_label(folder_name):
+    """Claude Code stores /home/ana/blog as -home-ana-blog; the last segment is a readable label."""
+    parts = [p for p in folder_name.split("-") if p]
+    return parts[-1] if parts else folder_name
+
+
+def collect(day, tzinfo, projects_dir, ignore):
+    """All conversation messages of `day` (local time) across projects, oldest first."""
+    start = dt.datetime.combine(day, dt.time(), tzinfo)
+    end = start + dt.timedelta(days=1)
+    found = set()
+    for folder in sorted(Path(projects_dir).glob("*")):
+        if not folder.is_dir():
+            continue
+        label = project_label(folder.name)
+        if any(fnmatch.fnmatch(folder.name, pat) or fnmatch.fnmatch(label, pat) for pat in ignore):
+            continue
+        for f in folder.glob("*.jsonl"):
+            if f.stat().st_mtime < start.timestamp():
+                continue
+            with open(f, errors="replace") as fh:
+                for line in fh:
+                    if '"type":"user"' not in line and '"type":"assistant"' not in line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                        when = dt.datetime.fromisoformat(d["timestamp"].replace("Z", "+00:00")).astimezone(tzinfo)
+                    except (ValueError, KeyError, TypeError, AttributeError):
+                        continue  # partial line of a transcript that is still being written
+                    if not start <= when < end:
+                        continue
+                    text, role = user_text(d), "user"
+                    if text is None:
+                        text, role = assistant_text(d), "assistant"
+                    if text:
+                        found.add(Msg(when, label, role, text[:MAX_PER_MESSAGE]))
+    return sorted(found)
+
+
+# ---------------------------------------------------------------- privacy
+
+DEFAULT_WORDS = """# ringkas: messages containing any of these words/phrases are NEVER sent to the summarizer.
+# One per line, whole word, case-insensitive. Edit freely.
+# Credentials
+password
+passcode
+PIN
+OTP
+CVV
+seed phrase
+private key
+kata sandi
+# Money
+bank account
+account number
+routing number
+IBAN
+credit card
+salary
+balance
+loan
+debt
+invoice amount
+rekening
+saldo
+gaji
+utang
+hutang
+pinjaman
+cicilan
+tagihan
+mutasi
+transfer
+# Health
+diagnosis
+medication
+blood pressure
+heart rate
+weight
+detak jantung
+tekanan darah
+berat badan
+gula darah
+"""
+
+
+def load_words(path):
+    path = Path(path)
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(DEFAULT_WORDS)
+    return [w.strip() for w in path.read_text().splitlines() if w.strip() and not w.strip().startswith("#")]
+
+
+def filter_sensitive(msgs, words):
+    """Replace messages containing a sensitive word (plus Indonesian/English suffixes) with MARKER.
+    Assistant replies after a filtered user message are filtered too, until the next user message."""
+    def variants(w):  # "salary" also matches "salaries"
+        return [re.escape(w)] + ([re.escape(w[:-1]) + "ies"] if w.lower().endswith("y") else [])
+
+    pattern = re.compile("|".join(rf"(?<!\w)(?:{'|'.join(variants(w))})(?:nya|ku|mu|an|lah|kah|s|es)?(?!\w)"
+                                  for w in words), re.IGNORECASE) if words else None
+    out, skipped, carry = [], 0, False
+    for m in msgs:
+        hit = bool(pattern and pattern.search(m.text))
+        if m.role == "user":
+            carry = hit
+        if hit or (m.role == "assistant" and carry):
+            skipped += 1
+            if not (out and out[-1].text == MARKER):
+                out.append(m._replace(text=MARKER))
+        else:
+            out.append(m)
+    return out, skipped
+
+
+_SECRETS = [
+    (re.compile(r"-----BEGIN [A-Z ]+-----.*?(-----END [A-Z ]+-----|$)", re.DOTALL), "▒"),
+    (re.compile(r"sk-[A-Za-z0-9_-]{16,}"), "▒"),
+    (re.compile(r"AIza[0-9A-Za-z_-]{30,}"), "▒"),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"), "▒"),
+    (re.compile(r"tskey-[A-Za-z0-9-]+"), "▒"),
+    (re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+"), "▒"),
+    (re.compile(r"(Bearer|Basic)\s+\S+", re.IGNORECASE), r"\1 ▒"),
+    (re.compile(r"(\w*(?:key|token|secret|password|passwd|pass|sandi|kunci)\w*)(\s*[:=]\s*)(\S+)", re.IGNORECASE),
+     r"\1\2▒"),
+    (re.compile(r"(--?(?:password|pass|token|key|secret)\s+)(\S+)", re.IGNORECASE), r"\1▒"),
+]
+
+
+def redact(text):
+    for pattern, repl in _SECRETS:
+        text = pattern.sub(repl, text)
+    return text
+
+
+def build_material(msgs, max_chars, tzinfo):
+    lines, total, left = [], 0, 0
+    for m in msgs:
+        line = f"[{m.time.astimezone(tzinfo):%H:%M}] [{m.project}] {m.role}: {m.text}"
+        if total + len(line) > max_chars:
+            left += 1
+            continue
+        lines.append(line)
+        total += len(line) + 1
+    if left:
+        lines.append(f"(… {left} more messages not included)")
+    return "\n".join(lines)
