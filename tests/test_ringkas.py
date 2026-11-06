@@ -166,12 +166,21 @@ class TestRedact(unittest.TestCase):
 class TestMaterial(unittest.TestCase):
     def test_limit_and_format(self):
         t = datetime(2026, 11, 6, 10, tzinfo=WITA)
-        many = [ringkas.Msg(t, "blog", "user", "x" * 800)] * 60
+        many = [ringkas.Msg(t, "blog", "user", "x" * 800)] * 600  # too many even when shortened
         material = ringkas.build_material(many, 40000, WITA)
         self.assertLessEqual(len(material), 40100)
         self.assertIn("more messages not included", material)
         self.assertEqual(ringkas.build_material([ringkas.Msg(t, "blog", "user", "hi")], 40000, WITA),
                          "[10:00] [blog] user: hi")
+
+    def test_whole_day_kept_by_shortening(self):
+        t = datetime(2026, 11, 6, 10, tzinfo=WITA)
+        msgs = [ringkas.Msg(t, "blog", "user", f"msg{i} " + "x" * 790) for i in range(100)]
+        material = ringkas.build_material(msgs, 40000, WITA)
+        self.assertLessEqual(len(material), 40100)
+        self.assertIn("msg0 ", material)
+        self.assertIn("msg99 ", material)  # the end of the day survives
+        self.assertNotIn("more messages not included", material)
 
 
 class FakePost:

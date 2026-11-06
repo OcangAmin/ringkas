@@ -262,17 +262,23 @@ def redact(text):
 
 
 def build_material(msgs, max_chars, tzinfo):
-    lines, total, left = [], 0, 0
-    for m in msgs:
-        line = f"[{m.time.astimezone(tzinfo):%H:%M}] [{m.project}] {m.role}: {m.text}"
-        if total + len(line) > max_chars:
-            left += 1
-            continue
-        lines.append(line)
+    """Lines "[HH:MM] [project] role: text" within max_chars. A busy day is kept whole by shortening every message
+    first; only when even short messages do not fit are the last ones dropped."""
+    def lines_with(limit):
+        return [f"[{m.time.astimezone(tzinfo):%H:%M}] [{m.project}] {m.role}: "
+                f"{m.text if len(m.text) <= limit else m.text[:limit] + '…'}" for m in msgs]
+
+    for limit in (MAX_PER_MESSAGE, 600, 400, 250, 150, 100):
+        lines = lines_with(limit)
+        if sum(len(l) + 1 for l in lines) <= max_chars:
+            return "\n".join(lines)
+    kept, total = [], 0
+    for line in lines:
+        if total + len(line) + 1 > max_chars:
+            break
+        kept.append(line)
         total += len(line) + 1
-    if left:
-        lines.append(f"(… {left} more messages not included)")
-    return "\n".join(lines)
+    return "\n".join(kept + [f"(… {len(lines) - len(kept)} more messages not included)"])
 
 
 # ---------------------------------------------------------------- summarizers
